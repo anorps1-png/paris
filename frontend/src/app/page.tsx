@@ -33,10 +33,17 @@ export default function Dashboard() {
   const [predictions, setPredictions] = useState<Prediction[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterLogic, setFilterLogic] = useState('ALL');
+  const [selectedDate, setSelectedDate] = useState<string>(() => {
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const dd = String(today.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  });
 
   useEffect(() => {
     setLoading(true);
-    fetch('http://localhost:3001/api/predictions')
+    fetch(`http://localhost:3001/api/predictions?date=${selectedDate}`)
       .then((res) => {
         if (!res.ok) {
           throw new Error('Erreur de chargement des prédictions');
@@ -49,11 +56,21 @@ export default function Dashboard() {
       })
       .catch((error) => {
         console.error("Erreur de chargement des prédictions :", error);
+        setPredictions([]);
         setLoading(false);
       });
-  }, []);
+  }, [selectedDate]);
 
   const filteredPredictions = predictions.filter(p => filterLogic === 'ALL' || p.logic_type === filterLogic);
+
+  const formatDateLabel = (dateStr: string) => {
+    try {
+      const dateObj = new Date(`${dateStr}T12:00:00`);
+      return dateObj.toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    } catch {
+      return dateStr;
+    }
+  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-white font-sans selection:bg-indigo-500/30">
@@ -76,26 +93,42 @@ export default function Dashboard() {
       </header>
 
       <main className="max-w-7xl mx-auto px-6 py-12">
-        <div className="flex flex-col md:flex-row justify-between items-end gap-6 mb-10">
+        <div className="flex flex-col lg:flex-row justify-between items-start lg:items-end gap-6 mb-10">
           <div>
-            <h2 className="text-3xl font-light mb-2">Analyses du Jour</h2>
-            <p className="text-slate-400">Retrouvez les prédictions basées sur les logiques H1, H2 et H3.</p>
+            <h2 className="text-3xl font-light mb-2">Analyses de Tennis</h2>
+            <p className="text-slate-400">
+              Prédictions pour le <span className="text-indigo-400 font-medium capitalize">{formatDateLabel(selectedDate)}</span>
+            </p>
           </div>
           
-          <div className="flex gap-2 bg-slate-900/50 p-1.5 rounded-xl border border-white/5 backdrop-blur-sm">
-            {['ALL', 'H1', 'H2', 'H3'].map(logic => (
-              <button
-                key={logic}
-                onClick={() => setFilterLogic(logic)}
-                className={`px-6 py-2 rounded-lg font-medium text-sm transition-all duration-300 ${
-                  filterLogic === logic 
-                    ? 'bg-indigo-500 text-white shadow-md shadow-indigo-500/25' 
-                    : 'text-slate-400 hover:text-white hover:bg-white/5'
-                }`}
-              >
-                {logic === 'ALL' ? 'Toutes' : `Logique ${logic}`}
-              </button>
-            ))}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4 w-full lg:w-auto">
+            {/* Date Selector */}
+            <div className="relative flex items-center bg-slate-900/50 rounded-xl border border-white/5 px-4 py-2 focus-within:border-indigo-500/40 backdrop-blur-sm transition-all duration-300">
+              <span className="text-xs text-slate-400 mr-2 uppercase font-bold tracking-wider select-none">Date :</span>
+              <input 
+                type="date" 
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="bg-transparent text-white border-none focus:outline-none focus:ring-0 text-sm cursor-pointer [color-scheme:dark] font-medium"
+              />
+            </div>
+
+            {/* Logics select */}
+            <div className="flex gap-1 bg-slate-900/50 p-1.5 rounded-xl border border-white/5 backdrop-blur-sm">
+              {['ALL', 'H1', 'H2', 'H3'].map(logic => (
+                <button
+                  key={logic}
+                  onClick={() => setFilterLogic(logic)}
+                  className={`px-5 py-2 rounded-lg font-medium text-sm transition-all duration-300 ${
+                    filterLogic === logic 
+                      ? 'bg-indigo-500 text-white shadow-md shadow-indigo-500/25' 
+                      : 'text-slate-400 hover:text-white hover:bg-white/5'
+                  }`}
+                >
+                  {logic === 'ALL' ? 'Toutes' : `Logique ${logic}`}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 

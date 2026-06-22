@@ -330,34 +330,58 @@ app.post('/api/trigger-analysis', async (req, res) => {
 
 // Endpoint pour récupérer les analyses du jour (pour le dashboard)
 app.get('/api/predictions', async (req, res) => {
-    // Vérifier s'il y a déjà des prédictions pour aujourd'hui
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
-
-    const { data: todayPredictions, error: checkError } = await supabase
-        .from('predictions')
-        .select('id')
-        .gte('created_at', todayStart.toISOString())
-        .lte('created_at', todayEnd.toISOString());
-
-    // S'il n'y a pas de prédictions, on lance le scraping & analyse automatique
-    if (checkError || !todayPredictions || todayPredictions.length === 0) {
-        console.log("Aucune prédiction pour aujourd'hui. Lancement automatique du scraping...");
-        await scrapeAndAnalyzeToday();
-    }
-
-    // Récupérer et renvoyer toutes les prédictions
-    const { data, error } = await supabase
-        .from('predictions')
-        .select('*, matches(*, player1:player1_id(*), player2:player2_id(*))')
-        .order('created_at', { ascending: false });
+    try {
+        const dateParam = req.query.date as string;
         
-    if (error) {
-        return res.status(500).json({ error: error.message });
+        let targetDateStr = dateParam;
+        if (!targetDateStr) {
+            const today = new Date();
+            const yyyy = today.getFullYear();
+            const mm = String(today.getMonth() + 1).padStart(2, '0');
+            const dd = String(today.getDate()).padStart(2, '0');
+            targetDateStr = `${yyyy}-${mm}-${dd}`;
+        }
+
+        const targetStart = new Date(`${targetDateStr}T00:00:00Z`);
+        const targetEnd = new Date(`${targetDateStr}T23:59:59.999Z`);
+
+        // Obtenir la date d'aujourd'hui au format YYYY-MM-DD
+        const today = new Date();
+        const yyyy = today.getFullYear();
+        const mm = String(today.getMonth() + 1).padStart(2, '0');
+        const dd = String(today.getDate()).padStart(2, '0');
+        const todayStr = `${yyyy}-${mm}-${dd}`;
+
+        // S'il n'y a pas de prédictions pour la date ciblée et que c'est aujourd'hui, lancer le scraping
+        if (targetDateStr === todayStr) {
+            const { data: todayPredictions, error: checkError } = await supabase
+                .from('predictions')
+                .select('id, matches!inner(match_date)')
+                .gte('matches.match_date', targetStart.toISOString())
+                .lte('matches.match_date', targetEnd.toISOString());
+
+            if (checkError || !todayPredictions || todayPredictions.length === 0) {
+                console.log("Aucune prédiction pour aujourd'hui. Lancement automatique du scraping...");
+                await scrapeAndAnalyzeToday();
+            }
+        }
+
+        // Récupérer et renvoyer les prédictions filtrées par la date du match
+        const { data, error } = await supabase
+            .from('predictions')
+            .select('*, matches!inner(*, player1:player1_id(*), player2:player2_id(*))')
+            .gte('matches.match_date', targetStart.toISOString())
+            .lte('matches.match_date', targetEnd.toISOString())
+            .order('created_at', { ascending: false });
+            
+        if (error) {
+            return res.status(500).json({ error: error.message });
+        }
+        res.json(data);
+    } catch (err: any) {
+        console.error("Erreur dans /api/predictions :", err);
+        res.status(500).json({ error: err.message });
     }
-    res.json(data);
 });
 
 app.listen(port, () => {
