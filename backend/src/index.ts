@@ -18,7 +18,21 @@ const supabaseUrl = process.env.SUPABASE_URL || '';
 const supabaseKey = process.env.SUPABASE_ANON_KEY || '';
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+// Lock to prevent multiple scraping operations from running concurrently
+let isScrapingAndAnalyzing = false;
+
 app.use(express.json());
+
+// Middleware CORS pour autoriser le frontend à faire des requêtes API
+app.use((req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
+    res.setHeader('Access-Control-Allow-Headers', 'X-Requested-With,Content-Type,Authorization');
+    if (req.method === 'OPTIONS') {
+        return res.sendStatus(200);
+    }
+    next();
+});
 
 // Helper pour exécuter un script Python dans le venv et parser sa sortie JSON
 function runPythonScript(scriptName: string, args: string[] = []): Promise<any> {
@@ -324,8 +338,17 @@ async function insertPrediction(matchId: number, logic: string, details: string)
 
 // Endpoint pour déclencher manuellement l'analyse
 app.post('/api/trigger-analysis', async (req, res) => {
-    await scrapeAndAnalyzeToday();
-    res.json({ message: "Scraping et Analyse déclenchés avec succès." });
+    if (isScrapingAndAnalyzing) {
+        return res.status(409).json({ message: "Scraping déjà en cours." });
+    }
+    isScrapingAndAnalyzing = true;
+    scrapeAndAnalyzeToday().then(() => {
+        isScrapingAndAnalyzing = false;
+    }).catch((err) => {
+        console.error("Erreur lors du scraping manuel :", err);
+        isScrapingAndAnalyzing = false;
+    });
+    res.json({ message: "Scraping et Analyse déclenchés en arrière-plan avec succès." });
 });
 
 // Endpoint pour récupérer les analyses du jour (pour le dashboard)
@@ -334,7 +357,7 @@ app.get('/api/predictions', async (req, res) => {
         const dateParam = req.query.date as string;
         
         let targetDateStr = dateParam;
-        if (!targetDateStr) {
+        if (!targetDateStr || targetDateStr === 'undefined') {
             const today = new Date();
             const yyyy = today.getFullYear();
             const mm = String(today.getMonth() + 1).padStart(2, '0');
@@ -342,8 +365,19 @@ app.get('/api/predictions', async (req, res) => {
             targetDateStr = `${yyyy}-${mm}-${dd}`;
         }
 
-        const targetStart = new Date(`${targetDateStr}T00:00:00Z`);
-        const targetEnd = new Date(`${targetDateStr}T23:59:59.999Z`);
+        let targetStart = new Date(`${targetDateStr}T00:00:00Z`);
+        let targetEnd = new Date(`${targetDateStr}T23:59:59.999Z`);
+
+        // S'assurer que les dates sont valides, sinon se rabattre sur aujourd'hui
+        if (isNaN(targetStart.getTime()) || isNaN(targetEnd.getTime())) {
+            const today = new Date();
+            const yyyy = today.getFullYear();
+            const mm = String(today.getMonth() + 1).padStart(2, '0');
+            const dd = String(today.getDate()).padStart(2, '0');
+            targetDateStr = `${yyyy}-${mm}-${dd}`;
+            targetStart = new Date(`${targetDateStr}T00:00:00Z`);
+            targetEnd = new Date(`${targetDateStr}T23:59:59.999Z`);
+        }
 
         // Obtenir la date d'aujourd'hui au format YYYY-MM-DD
         const today = new Date();
@@ -361,8 +395,18 @@ app.get('/api/predictions', async (req, res) => {
                 .lte('matches.match_date', targetEnd.toISOString());
 
             if (checkError || !todayPredictions || todayPredictions.length === 0) {
-                console.log("Aucune prédiction pour aujourd'hui. Lancement automatique du scraping...");
-                await scrapeAndAnalyzeToday();
+                if (!isScrapingAndAnalyzing) {
+                    isScrapingAndAnalyzing = true;
+                    console.log("Aucune prédiction pour aujourd'hui. Lancement automatique du scraping...");
+                    scrapeAndAnalyzeToday().then(() => {
+                        isScrapingAndAnalyzing = false;
+                    }).catch((err) => {
+                        console.error("Erreur lors du scraping automatique :", err);
+                        isScrapingAndAnalyzing = false;
+                    });
+                } else {
+                    console.log("Scraping déjà en cours, requête API non bloquée.");
+                }
             }
         }
 
@@ -380,6 +424,9 @@ app.get('/api/predictions', async (req, res) => {
         res.json(data);
     } catch (err: any) {
         console.error("Erreur dans /api/predictions :", err);
+        try {
+            require('fs').writeFileSync(require('path').join(__dirname, '../err_log.txt'), err.stack || err.message || String(err));
+        } catch (fsErr) {}
         res.status(500).json({ error: err.message });
     }
 });
