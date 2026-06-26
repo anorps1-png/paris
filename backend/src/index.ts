@@ -75,16 +75,79 @@ function runPythonScript(scriptName: string, args: string[] = []): Promise<any> 
     });
 }
 
-// Fonction globale pour récupérer et analyser les matchs du jour
-async function scrapeAndAnalyzeToday() {
-    console.log("=== Démarrage du scraping et de l'analyse du jour ===");
+function isTargetTournament(tournament: string): boolean {
+    const name = tournament.toLowerCase();
+    
+    // Exclude Challenger, ITF, exhibition, etc.
+    if (name.includes('challenger') || name.includes('itf') || name.includes('exhibition') || name.includes('utr')) {
+        return false;
+    }
+    
+    // Explicit 1000 or 500 or Grand Slam markers
+    if (name.includes('500') || name.includes('1000') || name.includes('grand chelem') || name.includes('grand slam')) {
+        return true;
+    }
+    
+    // Grand Slam names
+    const slams = ['wimbledon', 'roland garros', 'roland-garros', 'us open', 'australian open', 'australie'];
+    if (slams.some(slam => name.includes(slam))) {
+        return true;
+    }
+    
+    // ATP/WTA 1000 names
+    const m1000 = [
+        'indian wells', 'miami', 'monte carlo', 'monte-carlo', 'madrid', 'rome', 
+        'toronto', 'montreal', 'cincinnati', 'shanghai', 'bercy', 'wuhan'
+    ];
+    if (m1000.some(t => name.includes(t))) {
+        return true;
+    }
+    
+    // ATP/WTA 500 names
+    const m500 = [
+        'rotterdam', 'rio', 'acapulco', 'dubai', 'barcelone', 'barcelona', 'halle', 
+        'queen\'s', 'queens', 'washington', 'tokyo', 'vienne', 'vienna', 'bale', 
+        'basel', 'astana', 'abu dhabi', 'linz', 'strasbourg', 'san diego', 
+        'bad homburg', 'berlin', 'ningbo', 'monterrey', 'seoul'
+    ];
+    if (m500.some(t => name.includes(t))) {
+        return true;
+    }
+    
+    // Mixed tier tournaments (500 for WTA, 250 for ATP)
+    if (name.includes('eastbourne') || name.includes('adelaide') || name.includes('stuttgart')) {
+        if (name.includes('wta')) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+// Fonction globale pour récupérer et analyser les matchs (optionnellement filtrés par date)
+async function scrapeAndAnalyze(targetDateStr?: string) {
+    console.log(`=== Démarrage du scraping et de l'analyse ${targetDateStr ? 'pour ' + targetDateStr : 'du jour'} ===`);
     try {
-        // 1. Scraping des matchs du jour via 1xbet
+        // 1. Scraping des matchs via 1xbet (retourne tous les matchs visibles, y compris futurs)
         const matchesList = await runPythonScript('1xbet_scraper.py');
         console.log(`[Scraper] ${matchesList.length} matchs récupérés depuis 1xbet.`);
         
         for (const match of matchesList) {
-            console.log(`[Scraper] Traitement du match : ${match.player1} VS ${match.player2}`);
+            if (!isTargetTournament(match.tournament)) {
+                console.log(`[Scraper] Match ignoré (hors ATP/WTA 500, 1000, Grand Chelem) : ${match.player1} VS ${match.player2} (${match.tournament})`);
+                continue;
+            }
+            
+            // Si une date cible est spécifiée, ne traiter que les matchs de ce jour
+            if (targetDateStr) {
+                const matchDay = match.match_date ? match.match_date.substring(0, 10) : '';
+                if (matchDay !== targetDateStr) {
+                    console.log(`[Scraper] Match ignoré (date ${matchDay} != ${targetDateStr}) : ${match.player1} VS ${match.player2}`);
+                    continue;
+                }
+            }
+            
+            console.log(`[Scraper] Traitement du match : ${match.player1} VS ${match.player2} (${match.match_date})`);
             
             // 2. Scraping des statistiques Flashscore pour les deux joueurs
             let p1Data, p2Data;
@@ -153,7 +216,7 @@ async function scrapeAndAnalyzeToday() {
                 }
             }
             
-            // 6. Insertion du match du jour
+            // 6. Insertion/mise à jour du match
             const { data: existing } = await supabase
                 .from('matches')
                 .select('id')
@@ -193,32 +256,44 @@ async function scrapeAndAnalyzeToday() {
             }
         }
         
-        // 7. Lancement de l'analyse logique H1/H2/H3
-        await runAnalysis();
-        console.log("=== Scraping et analyse du jour terminés avec succès ===");
+        // 7. Lancement de l'analyse logique H1/H2/H3 (filtrée si date fournie)
+        await runAnalysis(targetDateStr);
+        console.log(`=== Scraping et analyse terminés avec succès ${targetDateStr ? 'pour ' + targetDateStr : ''} ===`);
     } catch (err) {
         console.error("[Scraper] Erreur lors du flux de scraping/analyse :", err);
     }
 }
 
+// Alias pour compatibilité avec le cron
+const scrapeAndAnalyzeToday = () => scrapeAndAnalyze();
+
 // Planification du scraping quotidien à 6h00
 cron.schedule('0 6 * * *', async () => {
     console.log('Exécution du cron job de scraping quotidien à 6h00');
-    await scrapeAndAnalyzeToday();
+    await scrapeAndAnalyze();
 });
 
-// Fonction pour récupérer les matchs du jour et appliquer H1/H2/H3
-async function runAnalysis() {
-    console.log("Démarrage de l'analyse des matchs...");
+// Fonction pour récupérer les matchs et appliquer H1/H2/H3 (optionnellement filtrée par date)
+async function runAnalysis(targetDateStr?: string) {
+    console.log(`Démarrage de l'analyse des matchs${targetDateStr ? ' pour ' + targetDateStr : ''}...`);
     
     // Récupération des données fraîches depuis la BDD (insérées par le scraper)
-    const { data: matches, error } = await supabase
+    let query = supabase
         .from('matches')
         .select(`
             *,
             player1:player1_id(*),
             player2:player2_id(*)
         `);
+    
+    // Filtrer par date si spécifiée
+    if (targetDateStr) {
+        const startISO = `${targetDateStr}T00:00:00.000Z`;
+        const endISO = `${targetDateStr}T23:59:59.999Z`;
+        query = query.gte('match_date', startISO).lte('match_date', endISO);
+    }
+    
+    const { data: matches, error } = await query;
         
     if (error || !matches) {
         console.error("Erreur récupération des matchs:", error);
@@ -336,19 +411,26 @@ async function insertPrediction(matchId: number, logic: string, details: string)
     }
 }
 
-// Endpoint pour déclencher manuellement l'analyse
+// Endpoint pour déclencher manuellement l'analyse (avec date optionnelle)
 app.post('/api/trigger-analysis', async (req, res) => {
     if (isScrapingAndAnalyzing) {
-        return res.status(409).json({ message: "Scraping déjà en cours." });
+        return res.status(409).json({ message: "Scraping déjà en cours.", isScraping: true });
     }
     isScrapingAndAnalyzing = true;
-    scrapeAndAnalyzeToday().then(() => {
+    const targetDate: string | undefined = req.body?.date || undefined;
+    console.log(`[API] Déclenchement manuel du scraping${targetDate ? ' pour la date ' + targetDate : ' (tous les matchs visibles)'}`);
+    scrapeAndAnalyze(targetDate).then(() => {
         isScrapingAndAnalyzing = false;
     }).catch((err) => {
         console.error("Erreur lors du scraping manuel :", err);
         isScrapingAndAnalyzing = false;
     });
-    res.json({ message: "Scraping et Analyse déclenchés en arrière-plan avec succès." });
+    res.json({ message: "Scraping et Analyse déclenchés en arrière-plan avec succès.", date: targetDate || null });
+});
+
+// Endpoint pour récupérer le statut du scraping
+app.get('/api/scrape-status', (req, res) => {
+    res.json({ isScraping: isScrapingAndAnalyzing });
 });
 
 // Endpoint pour récupérer les analyses du jour (pour le dashboard)
@@ -386,29 +468,7 @@ app.get('/api/predictions', async (req, res) => {
         const dd = String(today.getDate()).padStart(2, '0');
         const todayStr = `${yyyy}-${mm}-${dd}`;
 
-        // S'il n'y a pas de prédictions pour la date ciblée et que c'est aujourd'hui, lancer le scraping
-        if (targetDateStr === todayStr) {
-            const { data: todayPredictions, error: checkError } = await supabase
-                .from('predictions')
-                .select('id, matches!inner(match_date)')
-                .gte('matches.match_date', targetStart.toISOString())
-                .lte('matches.match_date', targetEnd.toISOString());
-
-            if (checkError || !todayPredictions || todayPredictions.length === 0) {
-                if (!isScrapingAndAnalyzing) {
-                    isScrapingAndAnalyzing = true;
-                    console.log("Aucune prédiction pour aujourd'hui. Lancement automatique du scraping...");
-                    scrapeAndAnalyzeToday().then(() => {
-                        isScrapingAndAnalyzing = false;
-                    }).catch((err) => {
-                        console.error("Erreur lors du scraping automatique :", err);
-                        isScrapingAndAnalyzing = false;
-                    });
-                } else {
-                    console.log("Scraping déjà en cours, requête API non bloquée.");
-                }
-            }
-        }
+        // Note: Le scraping automatique a été retiré - l'utilisateur déclenche manuellement via le bouton
 
         // Récupérer et renvoyer les prédictions filtrées par la date du match
         const { data, error } = await supabase

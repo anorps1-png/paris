@@ -34,6 +34,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [filterLogic, setFilterLogic] = useState('ALL');
   const [activePrediction, setActivePrediction] = useState<Prediction | null>(null);
+  const [isScraping, setIsScraping] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string>(() => {
     const today = new Date();
     const yyyy = today.getFullYear();
@@ -42,7 +43,7 @@ export default function Dashboard() {
     return `${yyyy}-${mm}-${dd}`;
   });
 
-  useEffect(() => {
+  const fetchPredictions = () => {
     setLoading(true);
     const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3003';
     fetch(`${apiBase}/api/predictions?date=${selectedDate}`)
@@ -61,7 +62,69 @@ export default function Dashboard() {
         setPredictions([]);
         setLoading(false);
       });
+  };
+
+  const pollScrapeStatus = () => {
+    const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3003';
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`${apiBase}/api/scrape-status`);
+        const data = await res.json();
+        if (!data.isScraping) {
+          clearInterval(interval);
+          setIsScraping(false);
+          fetchPredictions();
+        }
+      } catch (error) {
+        console.error("Erreur lors de la récupération du statut de scraping :", error);
+        clearInterval(interval);
+        setIsScraping(false);
+      }
+    }, 3000);
+  };
+
+  const triggerScrape = async () => {
+    if (isScraping) return;
+    setIsScraping(true);
+    const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3003';
+    try {
+      const res = await fetch(`${apiBase}/api/trigger-analysis`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: selectedDate }),
+      });
+      if (res.status === 409) {
+        // Scraping already running, just poll
+        setIsScraping(true);
+      }
+      pollScrapeStatus();
+    } catch (error) {
+      console.error("Erreur lors du déclenchement du scraping :", error);
+      setIsScraping(false);
+    }
+  };
+
+  const checkInitialScrapeStatus = async () => {
+    const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3003';
+    try {
+      const res = await fetch(`${apiBase}/api/scrape-status`);
+      const data = await res.json();
+      if (data.isScraping) {
+        setIsScraping(true);
+        pollScrapeStatus();
+      }
+    } catch (error) {
+      console.error("Erreur initial status check :", error);
+    }
+  };
+
+  useEffect(() => {
+    fetchPredictions();
   }, [selectedDate]);
+
+  useEffect(() => {
+    checkInitialScrapeStatus();
+  }, []);
 
   const filteredPredictions = predictions.filter(p => filterLogic === 'ALL' || p.logic_type === filterLogic);
 
@@ -88,9 +151,34 @@ export default function Dashboard() {
               TennisBet<span className="text-indigo-400">AI</span>
             </h1>
           </div>
-          <button className="px-5 py-2 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 hover:bg-indigo-500/20 transition-all duration-300 font-medium text-sm">
-            Exporter CSV
-          </button>
+          <div className="flex items-center gap-3">
+            <button 
+              onClick={triggerScrape}
+              disabled={isScraping}
+              className={`px-5 py-2 rounded-lg font-medium text-sm border flex items-center gap-2 transition-all duration-300 ${
+                isScraping 
+                  ? 'bg-slate-800 text-slate-500 border-slate-700 cursor-not-allowed'
+                  : 'bg-indigo-500 text-white border-indigo-600 hover:bg-indigo-600 hover:shadow-lg hover:shadow-indigo-500/25 cursor-pointer'
+              }`}
+            >
+              {isScraping ? (
+                <>
+                  <div className="animate-spin w-4 h-4 border-2 border-slate-500 border-t-transparent rounded-full" />
+                  Scraping en cours...
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.283 8H17" />
+                  </svg>
+                  Lancer l&apos;Analyse
+                </>
+              )}
+            </button>
+            <button className="px-5 py-2 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 hover:bg-indigo-500/20 transition-all duration-300 font-medium text-sm">
+              Exporter CSV
+            </button>
+          </div>
         </div>
       </header>
 
@@ -203,8 +291,45 @@ export default function Dashboard() {
             ))}
             
             {filteredPredictions.length === 0 && (
-              <div className="text-center py-20 text-slate-500 border border-dashed border-white/10 rounded-2xl">
-                Aucune prédiction trouvée pour ce filtre.
+              <div className="text-center py-20 border border-dashed border-white/10 rounded-2xl flex flex-col items-center gap-4">
+                <div className="w-16 h-16 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mb-2">
+                  <svg className="w-8 h-8 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                  </svg>
+                </div>
+                <p className="text-slate-400 font-medium text-lg">Aucune prédiction pour cette date</p>
+                <p className="text-slate-500 text-sm max-w-sm">
+                  {filterLogic !== 'ALL'
+                    ? `Aucune analyse de type "${filterLogic}" trouvée. Essayez "Toutes" ou lancez le scraping.`
+                    : `Aucune analyse n'a été générée pour le ${formatDateLabel(selectedDate)}. Cliquez ci-dessous pour lancer le scraping.`
+                  }
+                </p>
+                {filterLogic === 'ALL' && (
+                  <button
+                    id="empty-state-trigger-btn"
+                    onClick={triggerScrape}
+                    disabled={isScraping}
+                    className={`mt-2 px-6 py-3 rounded-xl font-semibold text-sm flex items-center gap-2 transition-all duration-300 shadow-lg ${
+                      isScraping
+                        ? 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed'
+                        : 'bg-indigo-500 text-white hover:bg-indigo-600 hover:shadow-indigo-500/30 cursor-pointer border border-indigo-600'
+                    }`}
+                  >
+                    {isScraping ? (
+                      <>
+                        <div className="animate-spin w-4 h-4 border-2 border-slate-500 border-t-transparent rounded-full" />
+                        Analyse en cours...
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.283 8H17" />
+                        </svg>
+                        Lancer le Scraping &amp; Analyse pour ce jour
+                      </>
+                    )}
+                  </button>
+                )}
               </div>
             )}
           </div>
